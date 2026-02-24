@@ -5,6 +5,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from database import Database
 from confirmations import ConfirmationSystem
 from config import *
+from typing import Dict, Optional
 
 class ClanStates(StatesGroup):
     waiting_for_clan_name = State()
