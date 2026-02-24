@@ -42,7 +42,8 @@ class Trading:
             f"✅ Криптовалюту\n"
             f"✅ Машины\n"
             f"✅ Телефоны\n"
-            f"✅ Дома\n\n"
+            f"✅ Дома\n"
+            f"✅ Аксессуары\n\n"
             f"Выберите действие:",
             parse_mode="Markdown",
             reply_markup=keyboard
@@ -50,8 +51,25 @@ class Trading:
 
     # ========== ПЕРЕВОД ДЕНЕГ ==========
     
-    async def transfer_money_start(self, callback_query: types.CallbackQuery, state: FSMContext):
+    async def transfer_money_start(self, callback_query: types.CallbackQuery, state: FSMContext, user_settings=None):
         """Начало перевода денег"""
+        from settings import UserSettings
+        if user_settings is None:
+            user_settings = UserSettings(self.bot, self.db)
+        
+        # Проверяем настройки отправителя
+        sender_check = await user_settings.check_permission(
+            callback_query.from_user.id, 
+            'transfer'
+        )
+        
+        if not sender_check:
+            await callback_query.answer(
+                "❌ Вы запретили переводы в настройках!", 
+                show_alert=True
+            )
+            return
+        
         await callback_query.message.edit_text(
             "💸 *ПЕРЕВОД ДЕНЕГ*\n\n"
             f"Комиссия: {TRANSFER_FEE*100}% (идет @{MAIN_ADMIN_USERNAME})\n\n"
@@ -64,6 +82,21 @@ class Trading:
     async def process_username(self, message: types.Message, state: FSMContext):
         """Обработка имени получателя"""
         username = message.text.replace('@', '')
+        
+        # Проверяем настройки получателя
+        from settings import UserSettings
+        user_settings = UserSettings(self.bot, self.db)
+        
+        async with self.db.pool.acquire() as conn:
+            receiver = await conn.fetchrow('SELECT * FROM users WHERE username ILIKE $1', username)
+            
+            if receiver:
+                receiver_check = await user_settings.check_permission(receiver['user_id'], 'transfer')
+                if not receiver_check:
+                    await message.reply(f"❌ @{username} запретил получать переводы в настройках!")
+                    await state.finish()
+                    return
+        
         await state.update_data(to_username=username)
         
         data = await state.get_data()
@@ -127,14 +160,32 @@ class Trading:
 
     # ========== ОБМЕН ПРЕДМЕТАМИ ==========
     
-    async def trade_items_start(self, callback_query: types.CallbackQuery, state: FSMContext):
+    async def trade_items_start(self, callback_query: types.CallbackQuery, state: FSMContext, user_settings=None):
         """Начало обмена предметами"""
+        from settings import UserSettings
+        if user_settings is None:
+            user_settings = UserSettings(self.bot, self.db)
+        
+        # Проверяем настройки
+        sender_check = await user_settings.check_permission(
+            callback_query.from_user.id, 
+            'trade'
+        )
+        
+        if not sender_check:
+            await callback_query.answer(
+                "❌ Вы запретили трейды в настройках!", 
+                show_alert=True
+            )
+            return
+        
         keyboard = InlineKeyboardMarkup(row_width=2)
         keyboard.add(
             InlineKeyboardButton("💰 Криптовалюта", callback_data="trade_crypto"),
             InlineKeyboardButton("🚗 Машины", callback_data="trade_cars"),
             InlineKeyboardButton("📱 Телефоны", callback_data="trade_phones"),
             InlineKeyboardButton("🏠 Дома", callback_data="trade_houses"),
+            InlineKeyboardButton("👕 Аксессуары", callback_data="trade_accessories"),
             InlineKeyboardButton("◀️ Назад", callback_data="trading_menu")
         )
         
@@ -144,12 +195,13 @@ class Trading:
             parse_mode="Markdown",
             reply_markup=keyboard
         )
+        await state.update_data(trade_type='item')
         await TradingStates.waiting_for_trade_type.set()
 
     async def show_user_items_for_trade(self, message: types.Message, state: FSMContext):
         """Показать предметы пользователя для обмена"""
         data = await state.get_data()
-        trade_type = data['trade_type']
+        trade_type = data.get('trade_subtype', data.get('trade_type'))
         user_id = message.from_user.id
         
         items = []
@@ -162,6 +214,8 @@ class Trading:
         elif trade_type == 'houses':
             async with self.db.pool.acquire() as conn:
                 items = await conn.fetch('SELECT * FROM houses WHERE user_id = $1', user_id)
+        elif trade_type == 'accessories':
+            items = await self.db.get_user_accessories(user_id)
         
         if not items:
             await message.reply(f"❌ У вас нет {trade_type} для передачи!")
@@ -184,6 +238,9 @@ class Trading:
             elif trade_type == 'houses':
                 btn_text = f"{item['house_name']} - {item['price']:,}{CURR}"
                 callback_data = f"trade_item_house_{item['id']}"
+            elif trade_type == 'accessories':
+                btn_text = f"{item['accessory_name']} - {item['price']:,}{CURR}"
+                callback_data = f"trade_item_accessory_{item['id']}"
             
             keyboard.add(InlineKeyboardButton(btn_text, callback_data=callback_data))
         
@@ -191,8 +248,12 @@ class Trading:
         
         await message.reply("Выберите предмет для передачи:", reply_markup=keyboard)
 
-    async def process_trade_item(self, callback_query: types.CallbackQuery, state: FSMContext):
+    async def process_trade_item(self, callback_query: types.CallbackQuery, state: FSMContext, user_settings=None):
         """Обработка выбранного предмета"""
+        from settings import UserSettings
+        if user_settings is None:
+            user_settings = UserSettings(self.bot, self.db)
+        
         data = callback_query.data.split('_')
         item_type = data[2]
         
@@ -209,6 +270,9 @@ class Trading:
         elif item_type == 'house':
             house_id = int(data[3])
             await state.update_data(trade_item_type='house', trade_item_id=house_id)
+        elif item_type == 'accessory':
+            accessory_id = int(data[3])
+            await state.update_data(trade_item_type='accessory', trade_item_id=accessory_id)
         
         await callback_query.message.edit_text("Введите @username получателя:")
         await TradingStates.waiting_for_username.set()
@@ -217,6 +281,20 @@ class Trading:
         """Подтверждение передачи предмета"""
         username = message.text.replace('@', '')
         data = await state.get_data()
+        
+        # Проверяем настройки получателя
+        from settings import UserSettings
+        user_settings = UserSettings(self.bot, self.db)
+        
+        async with self.db.pool.acquire() as conn:
+            receiver = await conn.fetchrow('SELECT * FROM users WHERE username ILIKE $1', username)
+            
+            if receiver:
+                receiver_check = await user_settings.check_permission(receiver['user_id'], 'trade')
+                if not receiver_check:
+                    await message.reply(f"❌ @{username} запретил получать предметы в настройках!")
+                    await state.finish()
+                    return
         
         # Получаем информацию о предмете
         item_info = ""
@@ -235,6 +313,10 @@ class Trading:
             async with self.db.pool.acquire() as conn:
                 house = await conn.fetchrow('SELECT * FROM houses WHERE id = $1', data['trade_item_id'])
                 item_info = f"🏠 {house['house_name']}"
+        elif data['trade_item_type'] == 'accessory':
+            async with self.db.pool.acquire() as conn:
+                acc = await conn.fetchrow('SELECT * FROM accessories WHERE id = $1', data['trade_item_id'])
+                item_info = f"👕 {acc['accessory_name']}"
         
         await self.confirmations.ask_confirmation(
             message,
@@ -277,7 +359,6 @@ class Trading:
                         WHERE user_id = $2 AND crypto_id = $3
                     ''', confirmed['item_amount'], confirmed['from_id'], confirmed['item_id'])
                     
-                    # Проверяем, есть ли у получателя такой кошелек
                     receiver_wallet = await conn.fetchrow('''
                         SELECT * FROM crypto_wallets 
                         WHERE user_id = $1 AND crypto_id = $2
@@ -296,21 +377,23 @@ class Trading:
                         ''', receiver['user_id'], confirmed['item_id'], confirmed['item_amount'], 0)
                 
                 elif confirmed['item_type'] == 'car':
-                    # Передача машины
                     await conn.execute('''
                         UPDATE cars SET user_id = $1 WHERE id = $2
                     ''', receiver['user_id'], confirmed['item_id'])
                 
                 elif confirmed['item_type'] == 'phone':
-                    # Передача телефона
                     await conn.execute('''
                         UPDATE phones SET user_id = $1 WHERE id = $2
                     ''', receiver['user_id'], confirmed['item_id'])
                 
                 elif confirmed['item_type'] == 'house':
-                    # Передача дома
                     await conn.execute('''
                         UPDATE houses SET user_id = $1 WHERE id = $2
+                    ''', receiver['user_id'], confirmed['item_id'])
+                
+                elif confirmed['item_type'] == 'accessory':
+                    await conn.execute('''
+                        UPDATE accessories SET user_id = $1 WHERE id = $2
                     ''', receiver['user_id'], confirmed['item_id'])
         
         await callback_query.message.edit_text(
