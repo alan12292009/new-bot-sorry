@@ -33,11 +33,11 @@ class Casino:
         keyboard.add(
             InlineKeyboardButton("🎲 Играть в кости", callback_data="casino_dice"),
             InlineKeyboardButton("🎰 Рулетка", callback_data="casino_roulette"),
-            InlineKeyboardButton("🤼 Сразиться с игроком", callback_data="casino_duel"),  # ИЗМЕНЕНО НАЗВАНИЕ
+            InlineKeyboardButton("🤼 Сразиться с игроком", callback_data="casino_duel"),
             InlineKeyboardButton("🎯 Джекпот", callback_data="casino_jackpot"),
             InlineKeyboardButton("📊 Моя статистика", callback_data="casino_stats"),
             InlineKeyboardButton("🏆 Топ казино", callback_data="casino_top"),
-            InlineKeyboardButton("◀️ В главное меню", callback_data="menu")  # ИЗМЕНЕНО
+            InlineKeyboardButton("◀️ В главное меню", callback_data="menu")
         )
         
         await message.reply(
@@ -66,7 +66,6 @@ class Casino:
             )
             return
         
-        # КНОПКА НАЗАД
         keyboard = InlineKeyboardMarkup()
         keyboard.add(InlineKeyboardButton("◀️ Назад в казино", callback_data="casino_menu"))
         
@@ -138,6 +137,7 @@ class Casino:
             self.jackpot += tax
             
             await self.db.update_balance(user_id, win_after_tax)
+            await self.db.update_game_stats(user_id, True, bet, win_after_tax)
             
             result_text += f"Твой бросок: *{user_value}*\n"
             result_text += f"Бросок бота: *{bot_value}*\n\n"
@@ -145,12 +145,12 @@ class Casino:
             result_text += f"📊 Налог: {tax:,}{CURR}\n"
             
         elif user_value < bot_value:
-            # Проигрыш - деньги идут админу (НЕ СООБЩАЕМ ОБ ЭТОМ)
+            # Проигрыш - деньги идут админу
             await self.db.update_balance(user_id, -bet)
             await self.db.update_balance(MAIN_ADMIN_ID, bet)
+            await self.db.update_game_stats(user_id, False, bet)
             self.jackpot += int(bet * 0.1)
             
-            # РАЗНЫЕ СООБЩЕНИЯ В ЗАВИСИМОСТИ ОТ БАЛАНСА
             new_balance = await self.db.get_balance(user_id)
             
             if new_balance == 0:
@@ -179,7 +179,7 @@ class Casino:
         keyboard = InlineKeyboardMarkup(row_width=2)
         keyboard.add(
             InlineKeyboardButton("🎲 Еще кости", callback_data="casino_dice"),
-            InlineKeyboardButton("◀️ В меню казино", callback_data="casino_menu")  # ИСПРАВЛЕНО
+            InlineKeyboardButton("◀️ В меню казино", callback_data="casino_menu")
         )
         
         await message.reply(result_text, parse_mode="Markdown", reply_markup=keyboard)
@@ -194,7 +194,7 @@ class Casino:
             InlineKeyboardButton("⚫ Черное (x2)", callback_data="roulette_black"),
             InlineKeyboardButton("🟢 Зеленое 0 (x36)", callback_data="roulette_green"),
             InlineKeyboardButton("🎲 На число (x36)", callback_data="roulette_number"),
-            InlineKeyboardButton("◀️ В меню казино", callback_data="casino_menu")  # ИСПРАВЛЕНО
+            InlineKeyboardButton("◀️ В меню казино", callback_data="casino_menu")
         )
         
         await self.bot.edit_message_text(
@@ -216,7 +216,6 @@ class Casino:
         bet_type = callback_query.data.replace('roulette_', '')
         await state.update_data(roulette_type=bet_type)
         
-        # КНОПКА НАЗАД
         keyboard = InlineKeyboardMarkup()
         keyboard.add(InlineKeyboardButton("◀️ Назад в рулетку", callback_data="casino_roulette"))
         
@@ -253,7 +252,6 @@ class Casino:
         if bet_type == 'number':
             await state.update_data(roulette_bet=bet)
             
-            # КНОПКА НАЗАД
             keyboard = InlineKeyboardMarkup()
             keyboard.add(InlineKeyboardButton("◀️ Назад в рулетку", callback_data="casino_roulette"))
             
@@ -291,15 +289,17 @@ class Casino:
             self.jackpot += tax
             
             await self.db.update_balance(user_id, win_after_tax)
+            await self.db.update_game_stats(user_id, True, bet, win_after_tax)
             
             result_text = f"🎉 *ТЫ ВЫИГРАЛ!* 🎉\n\n"
             result_text += f"Выпало число: *{number}* ({color})\n"
             result_text += f"💰 Выигрыш: *+{win_after_tax:,}{CURR}*\n"
             result_text += f"📊 Налог: {tax:,}{CURR}\n"
         else:
-            # Проигрыш - деньги идут админу (НЕ СООБЩАЕМ)
+            # Проигрыш - деньги идут админу
             await self.db.update_balance(user_id, -bet)
             await self.db.update_balance(MAIN_ADMIN_ID, bet)
+            await self.db.update_game_stats(user_id, False, bet)
             self.jackpot += int(bet * 0.1)
             
             new_balance = await self.db.get_balance(user_id)
@@ -322,7 +322,7 @@ class Casino:
         keyboard = InlineKeyboardMarkup(row_width=2)
         keyboard.add(
             InlineKeyboardButton("🎰 Еще рулетка", callback_data="casino_roulette"),
-            InlineKeyboardButton("◀️ В меню казино", callback_data="casino_menu")  # ИСПРАВЛЕНО
+            InlineKeyboardButton("◀️ В меню казино", callback_data="casino_menu")
         )
         
         await message.reply(result_text, parse_mode="Markdown", reply_markup=keyboard)
@@ -357,6 +357,7 @@ class Casino:
             self.jackpot += tax
             
             await self.db.update_balance(user_id, win_after_tax)
+            await self.db.update_game_stats(user_id, True, bet, win_after_tax)
             
             result_text = f"🎉 *ДЖЕКПОТ! ТЫ УГАДАЛ ЧИСЛО!* 🎉\n\n"
             result_text += f"Выпало число: *{number}* ({color})\n"
@@ -366,6 +367,7 @@ class Casino:
             # Проигрыш - деньги идут админу
             await self.db.update_balance(user_id, -bet)
             await self.db.update_balance(MAIN_ADMIN_ID, bet)
+            await self.db.update_game_stats(user_id, False, bet)
             self.jackpot += int(bet * 0.1)
             
             new_balance = await self.db.get_balance(user_id)
@@ -402,11 +404,26 @@ class Casino:
         red_numbers = [1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36]
         return 'red' if number in red_numbers else 'black'
 
-    # ========== ДУЭЛИ С ИГРОКАМИ (СРАЗИТЬСЯ С ИГРОКОМ) ==========
+    # ========== ДУЭЛИ С ИГРОКАМИ ==========
     
     async def duel_start(self, callback_query: types.CallbackQuery, state: FSMContext):
         """Начало дуэли с другим игроком"""
-        # КНОПКА НАЗАД
+        from settings import UserSettings
+        user_settings = UserSettings(self.bot, self.db)
+        
+        # Проверяем настройки пользователя
+        settings_check = await user_settings.check_permission(
+            callback_query.from_user.id, 
+            'duel'
+        )
+        
+        if not settings_check:
+            await callback_query.answer(
+                "❌ Вы запретили дуэли в настройках!", 
+                show_alert=True
+            )
+            return
+        
         keyboard = InlineKeyboardMarkup()
         keyboard.add(InlineKeyboardButton("◀️ Назад в казино", callback_data="casino_menu"))
         
@@ -437,10 +454,19 @@ class Casino:
                 await message.reply("❌ Нельзя играть с самим собой!")
                 await state.finish()
                 return
+            
+            # Проверяем настройки соперника
+            from settings import UserSettings
+            user_settings = UserSettings(self.bot, self.db)
+            opponent_settings = await user_settings.check_permission(opponent['user_id'], 'duel')
+            
+            if not opponent_settings:
+                await message.reply(f"❌ @{username} запретил дуэли в настройках!")
+                await state.finish()
+                return
         
         await state.update_data(opponent_id=opponent['user_id'], opponent_username=username)
         
-        # КНОПКА НАЗАД
         keyboard = InlineKeyboardMarkup()
         keyboard.add(InlineKeyboardButton("◀️ Назад", callback_data="casino_duel"))
         
@@ -638,12 +664,19 @@ class Casino:
             loser_username = duel['player2_username']
             winner_text = "🎉 ВЫ ПОБЕДИЛИ! 🎉"
             loser_text = "😢 ВЫ ПРОИГРАЛИ... 😢"
+            
+            await self.db.update_duel_stats(duel['player1'], True)
+            await self.db.update_duel_stats(duel['player2'], False)
+            
         elif player2_roll > player1_roll:
             winner_id = duel['player2']
             winner_username = duel['player2_username']
             loser_username = duel['player1_username']
             winner_text = "🎉 ВЫ ПОБЕДИЛИ! 🎉"
             loser_text = "😢 ВЫ ПРОИГРАЛИ... 😢"
+            
+            await self.db.update_duel_stats(duel['player2'], True)
+            await self.db.update_duel_stats(duel['player1'], False)
         else:
             # Ничья - возвращаем ставки
             await self.db.update_balance(duel['player1'], duel['bet'])
@@ -724,7 +757,9 @@ class Casino:
             text += f"📈 Процент побед: *{win_rate:.1f}%*\n"
         
         text += f"🏆 Макс. выигрыш: *{user['biggest_win']:,}{CURR}*\n"
-        text += f"💔 Макс. проигрыш: *{user['biggest_loss']:,}{CURR}*"
+        text += f"💔 Макс. проигрыш: *{user['biggest_loss']:,}{CURR}*\n"
+        text += f"⚔️ Дуэлей выиграно: *{user['duel_wins']}*\n"
+        text += f"⚔️ Дуэлей проиграно: *{user['duel_losses']}*"
         
         keyboard = InlineKeyboardMarkup()
         keyboard.add(InlineKeyboardButton("◀️ В меню казино", callback_data="casino_menu"))
