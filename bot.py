@@ -1,5 +1,6 @@
 import logging
 import asyncio
+import requests
 from aiogram import Bot, Dispatcher, types
 from aiogram.contrib.middlewares.logging import LoggingMiddleware
 from aiogram.utils import executor
@@ -7,6 +8,21 @@ from aiogram.dispatcher import FSMContext
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.dispatcher.filters.state import State, StatesGroup
+
+# Функция для закрытия старых сессий
+def close_old_sessions():
+    """Принудительно закрываем старые сессии бота"""
+    try:
+        from config import BOT_TOKEN
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
+        response = requests.post(url, json={"offset": -1, "timeout": 0})
+        if response.status_code == 200:
+            logging.info("✅ Старые сессии бота закрыты")
+    except Exception as e:
+        logging.error(f"❌ Ошибка при закрытии сессий: {e}")
+
+# Вызываем функцию перед запуском
+close_old_sessions()
 
 from config import *
 from database import Database
@@ -20,7 +36,9 @@ from phones import PhoneShop, PhoneStates
 from crypto import CryptoMarket, CryptoStates
 from trading import Trading, TradingStates
 from weekly_top import WeeklyTop
-from houses import HouseShop, HouseStates  # НОВЫЙ ИМПОРТ
+from houses import HouseShop, HouseStates
+from casino import Casino, CasinoStates
+from accessories import AccessoryShop, AccessoryStates
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -46,7 +64,9 @@ phone_shop = PhoneShop(bot, db, confirmations)
 crypto = CryptoMarket(bot, db, payments, confirmations)
 trading = Trading(bot, db, payments, confirmations)
 weekly_top = WeeklyTop(bot, db)
-house_shop = HouseShop(bot, db, payments, confirmations)  # НОВЫЙ МОДУЛЬ
+house_shop = HouseShop(bot, db, payments, confirmations)
+casino = Casino(bot, db, payments, confirmations)
+accessory_shop = AccessoryShop(bot, db, payments, confirmations)
 
 # Команда /start
 @dp.message_handler(commands=['start'])
@@ -83,6 +103,7 @@ async def show_main_menu(message: types.Message):
     
     # ОСНОВНЫЕ РАЗДЕЛЫ
     keyboard.add(
+        InlineKeyboardButton("🎰 Казино", callback_data="casino_menu"),
         InlineKeyboardButton("🏛️ Государство", callback_data="gov_menu"),
         InlineKeyboardButton("🏰 Кланы", callback_data="clans_menu"),
         InlineKeyboardButton("💰 Баланс", callback_data="balance"),
@@ -93,6 +114,7 @@ async def show_main_menu(message: types.Message):
     keyboard.add(
         InlineKeyboardButton("🚗 Купить машину", callback_data="car_shop"),
         InlineKeyboardButton("📱 Купить телефон", callback_data="phone_shop"),
+        InlineKeyboardButton("👕 Аксессуары", callback_data="accessories_menu"),
         InlineKeyboardButton("🏠 Купить дом", callback_data="houses_menu"),
         InlineKeyboardButton("💎 Крипто-биржа", callback_data="crypto_menu"),
         InlineKeyboardButton("📊 Крипто-портфель", callback_data="crypto_wallet")
@@ -103,7 +125,8 @@ async def show_main_menu(message: types.Message):
         InlineKeyboardButton("💱 Перевод денег", callback_data="transfer_money"),
         InlineKeyboardButton("🤝 Обмен предметами", callback_data="trade_items"),
         InlineKeyboardButton("📦 Инвентарь", callback_data="inventory"),
-        InlineKeyboardButton("🏠 Мои дома", callback_data="my_houses")
+        InlineKeyboardButton("🏠 Мои дома", callback_data="my_houses"),
+        InlineKeyboardButton("👕 Мои аксессуары", callback_data="my_accessories")
     )
     
     # СТАТИСТИКА И ТОПЫ
@@ -153,6 +176,30 @@ async def process_callback(callback_query: types.CallbackQuery, state: FSMContex
     elif data == "referrals":
         await show_referrals(callback_query)
     
+    # ========== КАЗИНО ==========
+    elif data == "casino_menu":
+        await casino.show_casino_menu(callback_query.message)
+    elif data == "casino_dice":
+        await casino.play_dice(callback_query)
+    elif data == "casino_roulette":
+        await casino.play_roulette(callback_query)
+    elif data.startswith("roulette_"):
+        await casino.roulette_bet_start(callback_query, state)
+    elif data == "casino_duel":
+        await casino.duel_start(callback_query, state)
+    elif data == "casino_jackpot":
+        await casino.show_jackpot(callback_query)
+    elif data == "casino_stats":
+        await casino.show_casino_stats(callback_query)
+    elif data == "casino_top":
+        await casino.show_casino_top(callback_query)
+    elif data.startswith("duel_accept_"):
+        await casino.process_duel_response(callback_query, state)
+    elif data.startswith("duel_reject_"):
+        await casino.process_duel_response(callback_query, state)
+    elif data.startswith("duel_roll_"):
+        await casino.process_duel_roll(callback_query)
+    
     # ========== ГОСУДАРСТВО ==========
     elif data == "gov_menu":
         await government.show_government_menu(callback_query.message)
@@ -187,8 +234,6 @@ async def process_callback(callback_query: types.CallbackQuery, state: FSMContex
         await car_shop.show_car_shop(callback_query.message)
     elif data.startswith("car_buy_"):
         await car_shop.select_car_brand(callback_query, state)
-    elif data == "car_buy_confirm":
-        await car_shop.buy_car_confirm(callback_query, state)
     elif data == "my_cars":
         await car_shop.show_my_cars(callback_query)
     
@@ -197,10 +242,23 @@ async def process_callback(callback_query: types.CallbackQuery, state: FSMContex
         await phone_shop.show_phone_shop(callback_query.message)
     elif data.startswith("phone_buy_"):
         await phone_shop.select_phone_brand(callback_query, state)
-    elif data == "phone_buy_confirm":
-        await phone_shop.buy_phone_confirm(callback_query, state)
     elif data == "my_phones":
         await phone_shop.show_my_phones(callback_query)
+    
+    # ========== АКСЕССУАРЫ ==========
+    elif data == "accessories_menu":
+        await accessory_shop.show_accessories_menu(callback_query.message)
+    elif data == "acc_all":
+        await accessory_shop.show_all(callback_query)
+    elif data.startswith("acc_category_"):
+        category = data.replace('acc_category_', '')
+        await accessory_shop.show_by_category(callback_query, category)
+    elif data.startswith("acc_view_"):
+        await accessory_shop.view_accessory(callback_query, state)
+    elif data.startswith("acc_buy_"):
+        await accessory_shop.confirm_buy(callback_query, state)
+    elif data == "my_accessories":
+        await accessory_shop.show_my_accessories(callback_query)
     
     # ========== ДОМА ==========
     elif data == "houses_menu":
@@ -237,8 +295,6 @@ async def process_callback(callback_query: types.CallbackQuery, state: FSMContex
         await crypto.sell_crypto_start(callback_query, state)
     
     # ========== ТОРГОВЛЯ ==========
-    elif data == "trading_menu":
-        await trading.show_trading_menu(callback_query.message)
     elif data == "transfer_money":
         await trading.transfer_money_start(callback_query, state)
     elif data == "trade_items":
@@ -269,6 +325,18 @@ async def process_callback(callback_query: types.CallbackQuery, state: FSMContex
     # ========== АДМИН ПАНЕЛЬ ==========
     elif data == "admin":
         await admin_panel.admin_menu(callback_query.message)
+    elif data == "admin_shop_menu":
+        await admin_panel.show_shop_menu(callback_query)
+    elif data == "admin_create_car":
+        await admin_panel.create_car_start(callback_query, state)
+    elif data == "admin_create_phone":
+        await admin_panel.create_phone_start(callback_query, state)
+    elif data == "admin_create_house":
+        await admin_panel.create_house_start(callback_query, state)
+    elif data == "admin_create_accessory":
+        await admin_panel.create_accessory_start(callback_query, state)
+    elif data == "admin_items_list":
+        await admin_panel.view_items(callback_query)
     elif data == "admin_give":
         await admin_panel.give_money_start(callback_query, state)
     elif data == "admin_banlist":
@@ -304,9 +372,13 @@ async def show_balance(callback_query: types.CallbackQuery):
     async with db.pool.acquire() as conn:
         houses = await conn.fetch('SELECT * FROM houses WHERE user_id = $1', callback_query.from_user.id)
     
+    # Получаем аксессуары
+    accessories = await db.get_user_accessories(callback_query.from_user.id)
+    
     cars_value = sum(car['price'] for car in cars)
     phones_value = sum(phone['price'] for phone in phones)
     houses_value = sum(house['price'] for house in houses)
+    accessories_value = sum(acc['price'] for acc in accessories)
     
     text = f"💰 *ТВОЙ БАЛАНС* 💰\n\n"
     text += f"💵 Наличные: *{user['balance']:,}{CURR}*\n"
@@ -314,7 +386,8 @@ async def show_balance(callback_query: types.CallbackQuery):
     text += f"🚗 Машины: *{cars_value:,}{CURR}*\n"
     text += f"📱 Телефоны: *{phones_value:,}{CURR}*\n"
     text += f"🏠 Дома: *{houses_value:,}{CURR}*\n"
-    text += f"💎 Общий капитал: *{user['balance'] + crypto_value + cars_value + phones_value + houses_value:,.2f}{CURR}*"
+    text += f"👕 Аксессуары: *{accessories_value:,}{CURR}*\n"
+    text += f"💎 Общий капитал: *{user['balance'] + crypto_value + cars_value + phones_value + houses_value + accessories_value:,.2f}{CURR}*"
     
     keyboard = InlineKeyboardMarkup()
     keyboard.add(InlineKeyboardButton("🏠 Главное меню", callback_data="menu"))
@@ -350,6 +423,7 @@ async def show_inventory(callback_query: types.CallbackQuery):
     cars = await db.get_user_cars(user_id)
     phones = await db.get_user_phones(user_id)
     crypto = await db.get_user_crypto_wallet(user_id)
+    accessories = await db.get_user_accessories(user_id)
     
     async with db.pool.acquire() as conn:
         houses = await conn.fetch('SELECT * FROM houses WHERE user_id = $1', user_id)
@@ -374,6 +448,12 @@ async def show_inventory(callback_query: types.CallbackQuery):
             text += f"• {house['house_name']} - {house['price']:,}{CURR}\n"
         text += "\n"
     
+    if accessories:
+        text += "*👕 Аксессуары:*\n"
+        for acc in accessories:
+            text += f"• {acc['accessory_name']} - {acc['price']:,}{CURR}\n"
+        text += "\n"
+    
     if crypto:
         text += "*💎 Криптовалюта:*\n"
         for item in crypto:
@@ -381,7 +461,7 @@ async def show_inventory(callback_query: types.CallbackQuery):
             text += f"• {item['symbol']}: {float(item['amount']):.8f} ({value:,.2f}{CURR})\n"
         text += "\n"
     
-    if not cars and not phones and not houses and not crypto:
+    if not cars and not phones and not houses and not crypto and not accessories:
         text += "У тебя пока нет предметов!"
     
     keyboard = InlineKeyboardMarkup()
@@ -396,6 +476,7 @@ async def show_stats(callback_query: types.CallbackQuery):
     # Получаем количество предметов
     cars = await db.get_user_cars(callback_query.from_user.id)
     phones = await db.get_user_phones(callback_query.from_user.id)
+    accessories = await db.get_user_accessories(callback_query.from_user.id)
     
     async with db.pool.acquire() as conn:
         houses = await conn.fetch('SELECT COUNT(*) as count FROM houses WHERE user_id = $1', callback_query.from_user.id)
@@ -408,7 +489,8 @@ async def show_stats(callback_query: types.CallbackQuery):
     text += f"💎 Заработано с рефералов: *{user['referral_earnings']:,}{CURR}*\n"
     text += f"🚗 Машин: *{len(cars)}*\n"
     text += f"📱 Телефонов: *{len(phones)}*\n"
-    text += f"🏠 Домов: *{house_count}*"
+    text += f"🏠 Домов: *{house_count}*\n"
+    text += f"👕 Аксессуаров: *{len(accessories)}*"
     
     keyboard = InlineKeyboardMarkup()
     keyboard.add(InlineKeyboardButton("🏠 Главное меню", callback_data="menu"))
@@ -442,11 +524,13 @@ async def show_top(callback_query: types.CallbackQuery):
 async def show_help(callback_query: types.CallbackQuery):
     text = f"🆘 *ПОМОЩЬ* 🆘\n\n"
     text += f"👑 Админ: @{MAIN_ADMIN_USERNAME}\n\n"
+    text += f"🎰 *Казино* - игры, дуэли, джекпот\n"
     text += f"🏛️ *Государство* - продажа предметов (20% комиссия)\n"
     text += f"🏰 *Кланы* - создание и вступление в кланы\n"
     text += f"🚗 *Машины* - покупка автомобилей\n"
     text += f"📱 *Телефоны* - покупка телефонов\n"
     text += f"🏠 *Дома* - покупка недвижимости\n"
+    text += f"👕 *Аксессуары* - стильные вещи\n"
     text += f"💎 *Криптовалюта* - торговля криптой\n"
     text += f"💱 *Переводы* - перевод денег друзьям\n"
     text += f"🤝 *Обмен* - обмен предметами\n"
@@ -459,7 +543,8 @@ async def show_help(callback_query: types.CallbackQuery):
     
     await callback_query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
 
-# Обработчики состояний
+# ========== ОБРАБОТЧИКИ СОСТОЯНИЙ ==========
+
 @dp.message_handler(state=AdminStates.waiting_for_user_id)
 async def admin_user_id(message: types.Message, state: FSMContext):
     await admin_panel.process_user_id(message, state)
@@ -475,6 +560,50 @@ async def admin_ban_reason(message: types.Message, state: FSMContext):
 @dp.message_handler(state=AdminStates.waiting_for_broadcast)
 async def admin_broadcast(message: types.Message, state: FSMContext):
     await admin_panel.process_broadcast(message, state)
+
+@dp.message_handler(state=AdminStates.waiting_for_item_name)
+async def admin_item_name(message: types.Message, state: FSMContext):
+    await admin_panel.process_item_name(message, state)
+
+@dp.message_handler(state=AdminStates.waiting_for_item_description)
+async def admin_item_description(message: types.Message, state: FSMContext):
+    await admin_panel.process_item_description(message, state)
+
+@dp.message_handler(state=AdminStates.waiting_for_item_price)
+async def admin_item_price(message: types.Message, state: FSMContext):
+    await admin_panel.process_item_price(message, state)
+
+@dp.message_handler(state=AdminStates.waiting_for_item_speed)
+async def admin_item_speed(message: types.Message, state: FSMContext):
+    await admin_panel.process_item_speed(message, state)
+
+@dp.message_handler(state=AdminStates.waiting_for_item_camera)
+async def admin_item_camera(message: types.Message, state: FSMContext):
+    await admin_panel.process_item_camera(message, state)
+
+@dp.message_handler(state=AdminStates.waiting_for_item_rooms)
+async def admin_item_rooms(message: types.Message, state: FSMContext):
+    await admin_panel.process_item_rooms(message, state)
+
+@dp.message_handler(state=AdminStates.waiting_for_item_area)
+async def admin_item_area(message: types.Message, state: FSMContext):
+    await admin_panel.process_item_area(message, state)
+
+@dp.message_handler(state=AdminStates.waiting_for_item_comfort)
+async def admin_item_comfort(message: types.Message, state: FSMContext):
+    await admin_panel.process_item_comfort(message, state)
+
+@dp.message_handler(state=AdminStates.waiting_for_item_category)
+async def admin_item_category(message: types.Message, state: FSMContext):
+    await admin_panel.process_item_category(message, state)
+
+@dp.message_handler(state=AdminStates.waiting_for_item_style)
+async def admin_item_style(message: types.Message, state: FSMContext):
+    await admin_panel.process_item_style(message, state)
+
+@dp.message_handler(state=AdminStates.waiting_for_item_quantity)
+async def admin_item_quantity(message: types.Message, state: FSMContext):
+    await admin_panel.process_item_quantity(message, state)
 
 @dp.message_handler(state=ClanStates.waiting_for_clan_name)
 async def clan_name(message: types.Message, state: FSMContext):
@@ -520,7 +649,32 @@ async def trading_amount(message: types.Message, state: FSMContext):
 async def house_confirm(message: types.Message, state: FSMContext):
     await house_shop.process_house_confirm(message, state)
 
-# Специальные обработчики для подтверждений
+@dp.message_handler(state=CasinoStates.waiting_for_dice_bet)
+async def casino_dice_bet(message: types.Message, state: FSMContext):
+    await casino.process_dice_bet(message, state)
+
+@dp.message_handler(state=CasinoStates.waiting_for_roulette_bet)
+async def casino_roulette_bet(message: types.Message, state: FSMContext):
+    await casino.process_roulette_bet(message, state)
+
+@dp.message_handler(state=CasinoStates.waiting_for_roulette_number)
+async def casino_roulette_number(message: types.Message, state: FSMContext):
+    await casino.process_roulette_number(message, state)
+
+@dp.message_handler(state=CasinoStates.waiting_for_duel_username)
+async def casino_duel_username(message: types.Message, state: FSMContext):
+    await casino.process_duel_username(message, state)
+
+@dp.message_handler(state=CasinoStates.waiting_for_duel_bet)
+async def casino_duel_bet(message: types.Message, state: FSMContext):
+    await casino.process_duel_bet(message, state)
+
+@dp.message_handler(state=AccessoryStates.waiting_for_accessory_confirm)
+async def accessory_confirm(message: types.Message, state: FSMContext):
+    await accessory_shop.process_confirm(message, state)
+
+# ========== ОБРАБОТЧИКИ ПОДТВЕРЖДЕНИЙ ==========
+
 @dp.callback_query_handler(lambda c: c.data == 'CREATE_CLAN_CONFIRM', state='*')
 async def create_clan_confirm(callback_query: types.CallbackQuery, state: FSMContext):
     await clans.execute_create_clan(callback_query, state)
@@ -564,6 +718,10 @@ async def buy_house_confirm(callback_query: types.CallbackQuery, state: FSMConte
 @dp.callback_query_handler(lambda c: c.data == 'SELL_HOUSE_CONFIRM', state='*')
 async def sell_house_confirm(callback_query: types.CallbackQuery, state: FSMContext):
     await house_shop.execute_sell_house(callback_query, state)
+
+@dp.callback_query_handler(lambda c: c.data == 'BUY_ACCESSORY_CONFIRM', state='*')
+async def buy_accessory_confirm(callback_query: types.CallbackQuery, state: FSMContext):
+    await accessory_shop.execute_buy(callback_query, state)
 
 # Запуск
 async def on_startup(dp):
