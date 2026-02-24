@@ -20,6 +20,7 @@ from phones import PhoneShop, PhoneStates
 from crypto import CryptoMarket, CryptoStates
 from trading import Trading, TradingStates
 from weekly_top import WeeklyTop
+from houses import HouseShop, HouseStates  # НОВЫЙ ИМПОРТ
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -45,6 +46,7 @@ phone_shop = PhoneShop(bot, db, confirmations)
 crypto = CryptoMarket(bot, db, payments, confirmations)
 trading = Trading(bot, db, payments, confirmations)
 weekly_top = WeeklyTop(bot, db)
+house_shop = HouseShop(bot, db, payments, confirmations)  # НОВЫЙ МОДУЛЬ
 
 # Команда /start
 @dp.message_handler(commands=['start'])
@@ -91,16 +93,17 @@ async def show_main_menu(message: types.Message):
     keyboard.add(
         InlineKeyboardButton("🚗 Купить машину", callback_data="car_shop"),
         InlineKeyboardButton("📱 Купить телефон", callback_data="phone_shop"),
+        InlineKeyboardButton("🏠 Купить дом", callback_data="houses_menu"),
         InlineKeyboardButton("💎 Крипто-биржа", callback_data="crypto_menu"),
         InlineKeyboardButton("📊 Крипто-портфель", callback_data="crypto_wallet")
     )
     
     # ТОРГОВЛЯ И ОБМЕН
     keyboard.add(
-        InlineKeyboardButton("💱 Перевод денег", callback_data="transfer_menu"),
+        InlineKeyboardButton("💱 Перевод денег", callback_data="transfer_money"),
+        InlineKeyboardButton("🤝 Обмен предметами", callback_data="trade_items"),
         InlineKeyboardButton("📦 Инвентарь", callback_data="inventory"),
-        InlineKeyboardButton("🏷️ Аукцион", callback_data="auction_menu"),
-        InlineKeyboardButton("🤝 Торговля", callback_data="trading_menu")
+        InlineKeyboardButton("🏠 Мои дома", callback_data="my_houses")
     )
     
     # СТАТИСТИКА И ТОПЫ
@@ -199,6 +202,28 @@ async def process_callback(callback_query: types.CallbackQuery, state: FSMContex
     elif data == "my_phones":
         await phone_shop.show_my_phones(callback_query)
     
+    # ========== ДОМА ==========
+    elif data == "houses_menu":
+        await house_shop.show_houses_menu(callback_query.message)
+    elif data == "houses_all":
+        await house_shop.show_houses_by_category(callback_query, 'all')
+    elif data == "houses_econom":
+        await house_shop.show_houses_by_category(callback_query, 'econom')
+    elif data == "houses_business":
+        await house_shop.show_houses_by_category(callback_query, 'business')
+    elif data == "houses_elite":
+        await house_shop.show_houses_by_category(callback_query, 'elite')
+    elif data.startswith("house_view_"):
+        await house_shop.view_house(callback_query, state)
+    elif data.startswith("house_buy_"):
+        await house_shop.confirm_buy_house(callback_query, state)
+    elif data == "my_houses":
+        await house_shop.show_my_houses(callback_query)
+    elif data == "sell_house_menu":
+        await house_shop.sell_house_menu(callback_query)
+    elif data.startswith("sell_house_"):
+        await house_shop.confirm_sell_house(callback_query, state)
+    
     # ========== КРИПТОВАЛЮТА ==========
     elif data == "crypto_menu":
         await crypto.show_crypto_market(callback_query.message)
@@ -212,14 +237,14 @@ async def process_callback(callback_query: types.CallbackQuery, state: FSMContex
         await crypto.sell_crypto_start(callback_query, state)
     
     # ========== ТОРГОВЛЯ ==========
-    elif data == "transfer_menu":
-        await trading.show_transfer_menu(callback_query.message)
-    elif data == "transfer_start":
-        await trading.transfer_start(callback_query, state)
     elif data == "trading_menu":
         await trading.show_trading_menu(callback_query.message)
-    elif data == "trade_start":
-        await trading.trade_start(callback_query, state)
+    elif data == "transfer_money":
+        await trading.transfer_money_start(callback_query, state)
+    elif data == "trade_items":
+        await trading.trade_items_start(callback_query, state)
+    elif data.startswith("trade_"):
+        await trading.process_trade_item(callback_query, state)
     
     # ========== ИНВЕНТАРЬ ==========
     elif data == "inventory":
@@ -275,15 +300,21 @@ async def show_balance(callback_query: types.CallbackQuery):
     cars = await db.get_user_cars(callback_query.from_user.id)
     phones = await db.get_user_phones(callback_query.from_user.id)
     
+    # Получаем дома
+    async with db.pool.acquire() as conn:
+        houses = await conn.fetch('SELECT * FROM houses WHERE user_id = $1', callback_query.from_user.id)
+    
     cars_value = sum(car['price'] for car in cars)
     phones_value = sum(phone['price'] for phone in phones)
+    houses_value = sum(house['price'] for house in houses)
     
     text = f"💰 *ТВОЙ БАЛАНС* 💰\n\n"
     text += f"💵 Наличные: *{user['balance']:,}{CURR}*\n"
     text += f"💎 Криптовалюта: *{crypto_value:,.2f}{CURR}*\n"
     text += f"🚗 Машины: *{cars_value:,}{CURR}*\n"
     text += f"📱 Телефоны: *{phones_value:,}{CURR}*\n"
-    text += f"💎 Общий капитал: *{user['balance'] + crypto_value + cars_value + phones_value:,.2f}{CURR}*"
+    text += f"🏠 Дома: *{houses_value:,}{CURR}*\n"
+    text += f"💎 Общий капитал: *{user['balance'] + crypto_value + cars_value + phones_value + houses_value:,.2f}{CURR}*"
     
     keyboard = InlineKeyboardMarkup()
     keyboard.add(InlineKeyboardButton("🏠 Главное меню", callback_data="menu"))
@@ -320,6 +351,9 @@ async def show_inventory(callback_query: types.CallbackQuery):
     phones = await db.get_user_phones(user_id)
     crypto = await db.get_user_crypto_wallet(user_id)
     
+    async with db.pool.acquire() as conn:
+        houses = await conn.fetch('SELECT * FROM houses WHERE user_id = $1', user_id)
+    
     text = "📦 *ТВОЙ ИНВЕНТАРЬ* 📦\n\n"
     
     if cars:
@@ -334,6 +368,12 @@ async def show_inventory(callback_query: types.CallbackQuery):
             text += f"• {phone['model']} - {phone['price']:,}{CURR}\n"
         text += "\n"
     
+    if houses:
+        text += "*🏠 Дома:*\n"
+        for house in houses:
+            text += f"• {house['house_name']} - {house['price']:,}{CURR}\n"
+        text += "\n"
+    
     if crypto:
         text += "*💎 Криптовалюта:*\n"
         for item in crypto:
@@ -341,7 +381,7 @@ async def show_inventory(callback_query: types.CallbackQuery):
             text += f"• {item['symbol']}: {float(item['amount']):.8f} ({value:,.2f}{CURR})\n"
         text += "\n"
     
-    if not cars and not phones and not crypto:
+    if not cars and not phones and not houses and not crypto:
         text += "У тебя пока нет предметов!"
     
     keyboard = InlineKeyboardMarkup()
@@ -353,11 +393,22 @@ async def show_inventory(callback_query: types.CallbackQuery):
 async def show_stats(callback_query: types.CallbackQuery):
     user = await db.get_user(callback_query.from_user.id)
     
+    # Получаем количество предметов
+    cars = await db.get_user_cars(callback_query.from_user.id)
+    phones = await db.get_user_phones(callback_query.from_user.id)
+    
+    async with db.pool.acquire() as conn:
+        houses = await conn.fetch('SELECT COUNT(*) as count FROM houses WHERE user_id = $1', callback_query.from_user.id)
+        house_count = houses[0]['count'] if houses else 0
+    
     text = f"📊 *ТВОЯ СТАТИСТИКА* 📊\n\n"
     text += f"📅 В боте с: *{user['created_at'].strftime('%d.%m.%Y')}*\n"
     text += f"💰 Баланс: *{user['balance']:,}{CURR}*\n"
     text += f"👥 Рефералов: *{user['referral_count']}*\n"
-    text += f"💎 Заработано с рефералов: *{user['referral_earnings']:,}{CURR}*"
+    text += f"💎 Заработано с рефералов: *{user['referral_earnings']:,}{CURR}*\n"
+    text += f"🚗 Машин: *{len(cars)}*\n"
+    text += f"📱 Телефонов: *{len(phones)}*\n"
+    text += f"🏠 Домов: *{house_count}*"
     
     keyboard = InlineKeyboardMarkup()
     keyboard.add(InlineKeyboardButton("🏠 Главное меню", callback_data="menu"))
@@ -395,8 +446,10 @@ async def show_help(callback_query: types.CallbackQuery):
     text += f"🏰 *Кланы* - создание и вступление в кланы\n"
     text += f"🚗 *Машины* - покупка автомобилей\n"
     text += f"📱 *Телефоны* - покупка телефонов\n"
+    text += f"🏠 *Дома* - покупка недвижимости\n"
     text += f"💎 *Криптовалюта* - торговля криптой\n"
     text += f"💱 *Переводы* - перевод денег друзьям\n"
+    text += f"🤝 *Обмен* - обмен предметами\n"
     text += f"📦 *Инвентарь* - все ваши предметы\n"
     text += f"👥 *Рефералы* - приглашай друзей и зарабатывай\n\n"
     text += f"Все комиссии идут на развитие проекта!"
@@ -463,6 +516,10 @@ async def trading_username(message: types.Message, state: FSMContext):
 async def trading_amount(message: types.Message, state: FSMContext):
     await trading.process_amount(message, state)
 
+@dp.message_handler(state=HouseStates.waiting_for_house_confirm)
+async def house_confirm(message: types.Message, state: FSMContext):
+    await house_shop.process_house_confirm(message, state)
+
 # Специальные обработчики для подтверждений
 @dp.callback_query_handler(lambda c: c.data == 'CREATE_CLAN_CONFIRM', state='*')
 async def create_clan_confirm(callback_query: types.CallbackQuery, state: FSMContext):
@@ -495,6 +552,18 @@ async def sell_crypto_confirm(callback_query: types.CallbackQuery, state: FSMCon
 @dp.callback_query_handler(lambda c: c.data == 'TRANSFER_CONFIRM', state='*')
 async def transfer_confirm(callback_query: types.CallbackQuery, state: FSMContext):
     await trading.execute_transfer(callback_query, state)
+
+@dp.callback_query_handler(lambda c: c.data == 'TRADE_ITEM_CONFIRM', state='*')
+async def trade_item_confirm(callback_query: types.CallbackQuery, state: FSMContext):
+    await trading.execute_trade(callback_query, state)
+
+@dp.callback_query_handler(lambda c: c.data == 'BUY_HOUSE_CONFIRM', state='*')
+async def buy_house_confirm(callback_query: types.CallbackQuery, state: FSMContext):
+    await house_shop.execute_buy_house(callback_query, state)
+
+@dp.callback_query_handler(lambda c: c.data == 'SELL_HOUSE_CONFIRM', state='*')
+async def sell_house_confirm(callback_query: types.CallbackQuery, state: FSMContext):
+    await house_shop.execute_sell_house(callback_query, state)
 
 # Запуск
 async def on_startup(dp):
