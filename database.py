@@ -36,6 +36,8 @@ class Database:
                     username TEXT,
                     first_name TEXT,
                     balance BIGINT DEFAULT 10000,
+                    exp BIGINT DEFAULT 0,
+                    level INTEGER DEFAULT 1,
                     is_banned BOOLEAN DEFAULT FALSE,
                     ban_reason TEXT,
                     is_admin BOOLEAN DEFAULT FALSE,
@@ -47,7 +49,9 @@ class Database:
                     total_wins INTEGER DEFAULT 0,
                     total_losses INTEGER DEFAULT 0,
                     biggest_win BIGINT DEFAULT 0,
-                    biggest_loss BIGINT DEFAULT 0
+                    biggest_loss BIGINT DEFAULT 0,
+                    duel_wins INTEGER DEFAULT 0,
+                    duel_losses INTEGER DEFAULT 0
                 )
             ''')
 
@@ -58,8 +62,11 @@ class Database:
                     user_id BIGINT REFERENCES users(user_id) ON DELETE CASCADE,
                     brand TEXT NOT NULL,
                     model TEXT NOT NULL,
+                    description TEXT,
                     price INTEGER NOT NULL,
                     speed INTEGER NOT NULL,
+                    is_custom BOOLEAN DEFAULT FALSE,
+                    created_by BIGINT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
@@ -71,24 +78,59 @@ class Database:
                     user_id BIGINT REFERENCES users(user_id) ON DELETE CASCADE,
                     brand TEXT NOT NULL,
                     model TEXT NOT NULL,
+                    description TEXT,
                     price INTEGER NOT NULL,
                     camera INTEGER NOT NULL,
+                    is_custom BOOLEAN DEFAULT FALSE,
+                    created_by BIGINT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
 
-            # ========== ТАБЛИЦА ДОМОВ (НОВАЯ) ==========
+            # ========== ТАБЛИЦА ДОМОВ ==========
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS houses (
                     id SERIAL PRIMARY KEY,
                     user_id BIGINT REFERENCES users(user_id) ON DELETE CASCADE,
                     house_id INTEGER NOT NULL,
                     house_name TEXT NOT NULL,
+                    description TEXT,
                     price INTEGER NOT NULL,
                     rooms INTEGER NOT NULL,
                     area INTEGER NOT NULL,
                     comfort INTEGER NOT NULL,
+                    is_custom BOOLEAN DEFAULT FALSE,
+                    created_by BIGINT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
+            # ========== ТАБЛИЦА АКСЕССУАРОВ ==========
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS accessories (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT REFERENCES users(user_id) ON DELETE CASCADE,
+                    accessory_id INTEGER NOT NULL,
+                    accessory_name TEXT NOT NULL,
+                    description TEXT,
+                    price INTEGER NOT NULL,
+                    category TEXT NOT NULL,
+                    style INTEGER NOT NULL,
+                    is_custom BOOLEAN DEFAULT FALSE,
+                    created_by BIGINT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
+            # ========== ТАБЛИЦА КАСТОМНЫХ ПРЕДМЕТОВ (ДЛЯ АДМИНА) ==========
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS custom_items (
+                    id SERIAL PRIMARY KEY,
+                    item_type TEXT NOT NULL,
+                    item_data JSONB NOT NULL,
+                    created_by BIGINT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    is_active BOOLEAN DEFAULT TRUE
                 )
             ''')
 
@@ -98,7 +140,8 @@ class Database:
                     id SERIAL PRIMARY KEY,
                     name TEXT UNIQUE NOT NULL,
                     symbol TEXT UNIQUE NOT NULL,
-                    price DECIMAL(20, 8) NOT NULL
+                    price DECIMAL(20, 8) NOT NULL,
+                    last_update TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
 
@@ -291,7 +334,7 @@ class Database:
                 ''', user_id, username, first_name)
                 return False
             
-            # ВАЖНО: Правильная проверка на администратора
+            # Проверка на администратора
             from config import ADMIN_IDS, MAIN_ADMIN_ID
             is_admin = user_id in ADMIN_IDS or user_id == MAIN_ADMIN_ID
             
@@ -307,7 +350,7 @@ class Database:
             row = await conn.fetchrow('SELECT * FROM users WHERE user_id = $1', user_id)
             if row:
                 user = dict(row)
-                # Дополнительная проверка на администратора при каждом запросе
+                # Дополнительная проверка на администратора
                 from config import ADMIN_IDS, MAIN_ADMIN_ID
                 if user_id in ADMIN_IDS or user_id == MAIN_ADMIN_ID:
                     user['is_admin'] = True
@@ -327,67 +370,21 @@ class Database:
             balance = await conn.fetchval('SELECT balance FROM users WHERE user_id = $1', user_id)
             return balance or 0
 
-    async def add_exp(self, user_id: int, exp: int) -> Dict:
-        """Добавление опыта"""
-        async with self.pool.acquire() as conn:
-            user = await conn.fetchrow('SELECT * FROM users WHERE user_id = $1', user_id)
-            new_exp = user['exp'] + exp
-            
-            await conn.execute('''
-                UPDATE users SET exp = $1 WHERE user_id = $2
-            ''', new_exp, user_id)
-            
-            return {'exp_gained': exp}
-
-    # ========== МЕТОДЫ ДЛЯ КАЗИНО ==========
-
-    async def update_game_stats(self, user_id: int, won: bool, bet: int, win_amount: int = 0):
-        """Обновление статистики игр в казино"""
-        async with self.pool.acquire() as conn:
-            if won:
-                await conn.execute('''
-                    UPDATE users 
-                    SET total_games = total_games + 1,
-                        total_wins = total_wins + 1,
-                        biggest_win = GREATEST(biggest_win, $1)
-                    WHERE user_id = $2
-                ''', win_amount, user_id)
-            else:
-                await conn.execute('''
-                    UPDATE users 
-                    SET total_games = total_games + 1,
-                        total_losses = total_losses + 1,
-                        biggest_loss = GREATEST(biggest_loss, $1)
-                    WHERE user_id = $2
-                ''', bet, user_id)
-
     # ========== МЕТОДЫ ДЛЯ МАШИН ==========
 
-    async def buy_car(self, user_id: int, brand: str, price: int) -> Dict:
+    async def add_car(self, user_id: int, brand: str, model: str, price: int, speed: int, description: str = "", is_custom: bool = False, created_by: int = None) -> Dict:
         async with self.pool.acquire() as conn:
             async with conn.transaction():
-                user = await conn.fetchrow('SELECT * FROM users WHERE user_id = $1', user_id)
-                
-                if user['balance'] < price:
-                    return {'success': False, 'message': f'❌ Недостаточно средств! Нужно {price}{CURR}'}
-                
-                models = ['Sport', 'Luxury', 'Premium', 'Limited']
-                model = f"{brand} {random.choice(models)} {random.randint(2022, 2024)}"
-                speed = random.randint(200, 350)
-                
-                await conn.execute('''
-                    INSERT INTO cars (user_id, brand, model, price, speed)
-                    VALUES ($1, $2, $3, $4, $5)
-                ''', user_id, brand, model, price, speed)
-                
-                await conn.execute('''
-                    UPDATE users SET balance = balance - $1 WHERE user_id = $2
-                ''', price, user_id)
+                car_id = await conn.fetchval('''
+                    INSERT INTO cars (user_id, brand, model, description, price, speed, is_custom, created_by)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                    RETURNING id
+                ''', user_id, brand, model, description, price, speed, is_custom, created_by)
                 
                 return {
                     'success': True,
-                    'message': f'✅ Вы купили {model} за {price}{CURR}!',
-                    'car': model
+                    'car_id': car_id,
+                    'message': f'✅ Машина {model} добавлена!'
                 }
 
     async def get_user_cars(self, user_id: int) -> List[Dict]:
@@ -397,33 +394,26 @@ class Database:
             ''', user_id)
             return [dict(row) for row in rows]
 
+    async def get_all_cars(self) -> List[Dict]:
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch('SELECT * FROM cars ORDER BY price DESC')
+            return [dict(row) for row in rows]
+
     # ========== МЕТОДЫ ДЛЯ ТЕЛЕФОНОВ ==========
 
-    async def buy_phone(self, user_id: int, brand: str, price: int) -> Dict:
+    async def add_phone(self, user_id: int, brand: str, model: str, price: int, camera: int, description: str = "", is_custom: bool = False, created_by: int = None) -> Dict:
         async with self.pool.acquire() as conn:
             async with conn.transaction():
-                user = await conn.fetchrow('SELECT * FROM users WHERE user_id = $1', user_id)
-                
-                if user['balance'] < price:
-                    return {'success': False, 'message': f'❌ Недостаточно средств! Нужно {price}{CURR}'}
-                
-                models = ['Pro Max', 'Ultra', 'Plus', 'Premium']
-                model = f"{brand} {random.choice(models)} {random.randint(13, 15)}"
-                camera = random.randint(48, 108)
-                
-                await conn.execute('''
-                    INSERT INTO phones (user_id, brand, model, price, camera)
-                    VALUES ($1, $2, $3, $4, $5)
-                ''', user_id, brand, model, price, camera)
-                
-                await conn.execute('''
-                    UPDATE users SET balance = balance - $1 WHERE user_id = $2
-                ''', price, user_id)
+                phone_id = await conn.fetchval('''
+                    INSERT INTO phones (user_id, brand, model, description, price, camera, is_custom, created_by)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                    RETURNING id
+                ''', user_id, brand, model, description, price, camera, is_custom, created_by)
                 
                 return {
                     'success': True,
-                    'message': f'✅ Вы купили {model} за {price}{CURR}!',
-                    'phone': model
+                    'phone_id': phone_id,
+                    'message': f'✅ Телефон {model} добавлен!'
                 }
 
     async def get_user_phones(self, user_id: int) -> List[Dict]:
@@ -435,27 +425,21 @@ class Database:
 
     # ========== МЕТОДЫ ДЛЯ ДОМОВ ==========
 
-    async def buy_house(self, user_id: int, house: Dict) -> Dict:
+    async def add_house(self, user_id: int, house_data: Dict) -> Dict:
         async with self.pool.acquire() as conn:
             async with conn.transaction():
-                user = await conn.fetchrow('SELECT * FROM users WHERE user_id = $1', user_id)
-                
-                if user['balance'] < house['price']:
-                    return {'success': False, 'message': f'❌ Недостаточно средств! Нужно {house["price"]}{CURR}'}
-                
-                await conn.execute('''
-                    INSERT INTO houses (user_id, house_id, house_name, price, rooms, area, comfort)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7)
-                ''', user_id, house['id'], house['name'], house['price'], 
-                    house['rooms'], house['area'], house['comfort'])
-                
-                await conn.execute('''
-                    UPDATE users SET balance = balance - $1 WHERE user_id = $2
-                ''', house['price'], user_id)
+                house_id = await conn.fetchval('''
+                    INSERT INTO houses (user_id, house_id, house_name, description, price, rooms, area, comfort, is_custom, created_by)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                    RETURNING id
+                ''', user_id, house_data['id'], house_data['name'], house_data.get('description', ''),
+                    house_data['price'], house_data['rooms'], house_data['area'], 
+                    house_data['comfort'], house_data.get('is_custom', False), house_data.get('created_by'))
                 
                 return {
                     'success': True,
-                    'message': f'✅ Вы купили {house["name"]} за {house["price"]}{CURR}!'
+                    'house_id': house_id,
+                    'message': f'✅ Дом {house_data["name"]} добавлен!'
                 }
 
     async def get_user_houses(self, user_id: int) -> List[Dict]:
@@ -465,14 +449,56 @@ class Database:
             ''', user_id)
             return [dict(row) for row in rows]
 
-    async def sell_house_to_government(self, user_id: int, house_id: int, buy_price: int, commission: int) -> Dict:
+    # ========== МЕТОДЫ ДЛЯ АКСЕССУАРОВ ==========
+
+    async def add_accessory(self, user_id: int, accessory_data: Dict) -> Dict:
         async with self.pool.acquire() as conn:
             async with conn.transaction():
-                await conn.execute('DELETE FROM houses WHERE id = $1', house_id)
-                await conn.execute('UPDATE users SET balance = balance + $1 WHERE user_id = $2', buy_price, user_id)
-                await conn.execute('UPDATE users SET balance = balance + $1 WHERE user_id = $2', commission, MAIN_ADMIN_ID)
+                acc_id = await conn.fetchval('''
+                    INSERT INTO accessories (user_id, accessory_id, accessory_name, description, price, category, style, is_custom, created_by)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                    RETURNING id
+                ''', user_id, accessory_data['id'], accessory_data['name'], 
+                    accessory_data.get('description', ''), accessory_data['price'],
+                    accessory_data['category'], accessory_data['style'],
+                    accessory_data.get('is_custom', False), accessory_data.get('created_by'))
                 
-                return {'success': True}
+                return {
+                    'success': True,
+                    'accessory_id': acc_id,
+                    'message': f'✅ Аксессуар {accessory_data["name"]} добавлен!'
+                }
+
+    async def get_user_accessories(self, user_id: int) -> List[Dict]:
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch('''
+                SELECT * FROM accessories WHERE user_id = $1 ORDER BY price DESC
+            ''', user_id)
+            return [dict(row) for row in rows]
+
+    # ========== МЕТОДЫ ДЛЯ КАСТОМНЫХ ПРЕДМЕТОВ (АДМИНКА) ==========
+
+    async def add_custom_item(self, item_type: str, item_data: Dict, created_by: int) -> Dict:
+        async with self.pool.acquire() as conn:
+            item_id = await conn.fetchval('''
+                INSERT INTO custom_items (item_type, item_data, created_by)
+                VALUES ($1, $2, $3)
+                RETURNING id
+            ''', item_type, json.dumps(item_data), created_by)
+            
+            return {
+                'success': True,
+                'item_id': item_id,
+                'message': f'✅ {item_type} успешно создан!'
+            }
+
+    async def get_custom_items(self, item_type: str = None) -> List[Dict]:
+        async with self.pool.acquire() as conn:
+            if item_type:
+                rows = await conn.fetch('SELECT * FROM custom_items WHERE item_type = $1 AND is_active = TRUE', item_type)
+            else:
+                rows = await conn.fetch('SELECT * FROM custom_items WHERE is_active = TRUE')
+            return [dict(row) for row in rows]
 
     # ========== МЕТОДЫ ДЛЯ КРИПТОВАЛЮТЫ ==========
 
@@ -496,54 +522,41 @@ class Database:
             ''', user_id)
             return [dict(row) for row in rows]
 
-    async def buy_crypto(self, user_id: int, crypto_id: int, amount_usd: float, crypto_amount: float, fee: float) -> Dict:
-        async with self.pool.acquire() as conn:
-            async with conn.transaction():
-                await conn.execute('UPDATE users SET balance = balance - $1 WHERE user_id = $2', amount_usd, user_id)
-                await conn.execute('UPDATE users SET balance = balance + $1 WHERE user_id = $2', int(fee), MAIN_ADMIN_ID)
-                
-                wallet = await conn.fetchrow('''
-                    SELECT * FROM crypto_wallets WHERE user_id = $1 AND crypto_id = $2
-                ''', user_id, crypto_id)
-                
-                if wallet:
-                    total_amount = float(wallet['amount']) + crypto_amount
-                    total_cost = (float(wallet['amount']) * float(wallet['average_buy_price'])) + (amount_usd - fee)
-                    avg_price = total_cost / total_amount
-                    
-                    await conn.execute('''
-                        UPDATE crypto_wallets SET amount = $1, average_buy_price = $2
-                        WHERE user_id = $3 AND crypto_id = $4
-                    ''', total_amount, avg_price, user_id, crypto_id)
-                else:
-                    await conn.execute('''
-                        INSERT INTO crypto_wallets (user_id, crypto_id, amount, average_buy_price)
-                        VALUES ($1, $2, $3, $4)
-                    ''', user_id, crypto_id, crypto_amount, (amount_usd - fee) / crypto_amount)
-                
-                return {'success': True}
+    # ========== МЕТОДЫ ДЛЯ КАЗИНО ==========
 
-    async def sell_crypto(self, user_id: int, crypto_id: int, crypto_amount: float, usd_after_fee: float, fee: float) -> Dict:
+    async def update_game_stats(self, user_id: int, won: bool, bet: int, win_amount: int = 0):
         async with self.pool.acquire() as conn:
-            async with conn.transaction():
-                await conn.execute('UPDATE users SET balance = balance + $1 WHERE user_id = $2', int(usd_after_fee), user_id)
-                await conn.execute('UPDATE users SET balance = balance + $1 WHERE user_id = $2', int(fee), MAIN_ADMIN_ID)
-                
-                wallet = await conn.fetchrow('''
-                    SELECT * FROM crypto_wallets WHERE user_id = $1 AND crypto_id = $2
-                ''', user_id, crypto_id)
-                
-                new_amount = float(wallet['amount']) - crypto_amount
-                if new_amount < 0.00000001:
-                    await conn.execute('DELETE FROM crypto_wallets WHERE user_id = $1 AND crypto_id = $2', user_id, crypto_id)
-                else:
-                    await conn.execute('UPDATE crypto_wallets SET amount = $1 WHERE user_id = $2 AND crypto_id = $3', new_amount, user_id, crypto_id)
-                
-                return {'success': True}
+            if won:
+                await conn.execute('''
+                    UPDATE users 
+                    SET total_games = total_games + 1,
+                        total_wins = total_wins + 1,
+                        biggest_win = GREATEST(biggest_win, $1)
+                    WHERE user_id = $2
+                ''', win_amount, user_id)
+            else:
+                await conn.execute('''
+                    UPDATE users 
+                    SET total_games = total_games + 1,
+                        total_losses = total_losses + 1,
+                        biggest_loss = GREATEST(biggest_loss, $1)
+                    WHERE user_id = $2
+                ''', bet, user_id)
+
+    async def update_duel_stats(self, user_id: int, won: bool):
+        async with self.pool.acquire() as conn:
+            if won:
+                await conn.execute('''
+                    UPDATE users SET duel_wins = duel_wins + 1 WHERE user_id = $1
+                ''', user_id)
+            else:
+                await conn.execute('''
+                    UPDATE users SET duel_losses = duel_losses + 1 WHERE user_id = $1
+                ''', user_id)
 
     # ========== МЕТОДЫ ДЛЯ КЛАНОВ ==========
 
-    async def create_clan(self, owner_id: int, name: str, tag: str, description: str, clan_type: str, price: int) -> Dict:
+    async def create_clan(self, owner_id: int, name: str, tag: str, description: str, clan_type: str) -> Dict:
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 existing = await conn.fetchval('SELECT 1 FROM clan_members WHERE user_id = $1', owner_id)
@@ -551,8 +564,8 @@ class Database:
                     return {'success': False, 'message': '❌ Вы уже состоите в клане!'}
                 
                 user = await conn.fetchrow('SELECT * FROM users WHERE user_id = $1', owner_id)
-                if user['balance'] < price:
-                    return {'success': False, 'message': f'❌ Недостаточно средств! Нужно {price}{CURR}'}
+                if user['balance'] < CLAN_CREATE_PRICE:
+                    return {'success': False, 'message': f'❌ Недостаточно средств! Нужно {CLAN_CREATE_PRICE}{CURR}'}
                 
                 clan_id = await conn.fetchval('''
                     INSERT INTO clans (name, tag, owner_id, description, type, balance)
@@ -567,7 +580,7 @@ class Database:
                 
                 await conn.execute('''
                     UPDATE users SET balance = balance - $1 WHERE user_id = $2
-                ''', price, owner_id)
+                ''', CLAN_CREATE_PRICE, owner_id)
                 
                 return {
                     'success': True,
@@ -585,119 +598,6 @@ class Database:
             ''', user_id)
             return dict(row) if row else None
 
-    async def get_all_clans(self, page: int = 1, limit: int = 5) -> List[Dict]:
-        async with self.pool.acquire() as conn:
-            offset = (page - 1) * limit
-            rows = await conn.fetch('''
-                SELECT c.*, u.username as owner_name
-                FROM clans c
-                JOIN users u ON c.owner_id = u.user_id
-                ORDER BY c.balance DESC
-                LIMIT $1 OFFSET $2
-            ''', limit, offset)
-            return [dict(row) for row in rows]
-
-    async def get_total_clans(self) -> int:
-        async with self.pool.acquire() as conn:
-            return await conn.fetchval('SELECT COUNT(*) FROM clans')
-
-    async def apply_to_clan(self, clan_id: int, user_id: int, message: str) -> Dict:
-        async with self.pool.acquire() as conn:
-            existing = await conn.fetchval('''
-                SELECT 1 FROM clan_applications 
-                WHERE clan_id = $1 AND user_id = $2 AND status = 'pending'
-            ''', clan_id, user_id)
-            
-            if existing:
-                return {'success': False, 'message': '❌ Вы уже подали заявку!'}
-            
-            await conn.execute('''
-                INSERT INTO clan_applications (clan_id, user_id, message)
-                VALUES ($1, $2, $3)
-            ''', clan_id, user_id, message)
-            
-            return {'success': True, 'message': '✅ Заявка отправлена!'}
-
-    async def get_clan_applications(self, clan_id: int) -> List[Dict]:
-        async with self.pool.acquire() as conn:
-            rows = await conn.fetch('''
-                SELECT a.*, u.username, u.first_name
-                FROM clan_applications a
-                JOIN users u ON a.user_id = u.user_id
-                WHERE a.clan_id = $1 AND a.status = 'pending'
-            ''', clan_id)
-            return [dict(row) for row in rows]
-
-    async def accept_application(self, app_id: int) -> Dict:
-        async with self.pool.acquire() as conn:
-            async with conn.transaction():
-                app = await conn.fetchrow('SELECT * FROM clan_applications WHERE id = $1', app_id)
-                
-                if not app or app['status'] != 'pending':
-                    return {'success': False, 'message': '❌ Заявка уже обработана!'}
-                
-                clan = await conn.fetchrow('SELECT * FROM clans WHERE id = $1', app['clan_id'])
-                
-                if clan['members_count'] >= clan['max_members']:
-                    return {'success': False, 'message': '❌ Клан достиг максимума!'}
-                
-                await conn.execute('''
-                    INSERT INTO clan_members (clan_id, user_id, role, rank)
-                    VALUES ($1, $2, 'member', 1)
-                ''', app['clan_id'], app['user_id'])
-                
-                await conn.execute('UPDATE clans SET members_count = members_count + 1 WHERE id = $1', app['clan_id'])
-                await conn.execute('UPDATE clan_applications SET status = $1 WHERE id = $2', 'accepted', app_id)
-                
-                return {
-                    'success': True,
-                    'message': '✅ Заявка принята!',
-                    'user_id': app['user_id'],
-                    'clan_name': clan['name']
-                }
-
-    async def reject_application(self, app_id: int) -> Dict:
-        async with self.pool.acquire() as conn:
-            app = await conn.fetchrow('SELECT * FROM clan_applications WHERE id = $1', app_id)
-            
-            if not app or app['status'] != 'pending':
-                return {'success': False, 'message': '❌ Заявка уже обработана!'}
-            
-            await conn.execute('UPDATE clan_applications SET status = $1 WHERE id = $2', 'rejected', app_id)
-            
-            return {
-                'success': True,
-                'message': '✅ Заявка отклонена',
-                'user_id': app['user_id']
-            }
-
-    async def join_open_clan(self, clan_id: int, user_id: int) -> Dict:
-        async with self.pool.acquire() as conn:
-            async with conn.transaction():
-                clan = await conn.fetchrow('SELECT * FROM clans WHERE id = $1 AND type = $2', clan_id, 'open')
-                
-                if not clan:
-                    return {'success': False, 'message': '❌ Клан не найден или не является открытым!'}
-                
-                if clan['members_count'] >= clan['max_members']:
-                    return {'success': False, 'message': '❌ Клан достиг максимума!'}
-                
-                existing = await conn.fetchval('SELECT 1 FROM clan_members WHERE user_id = $1', user_id)
-                if existing:
-                    return {'success': False, 'message': '❌ Вы уже в клане!'}
-                
-                await conn.execute('''
-                    INSERT INTO clan_members (clan_id, user_id, role, rank)
-                    VALUES ($1, $2, 'member', 1)
-                ''', clan_id, user_id)
-                
-                await conn.execute('UPDATE clans SET members_count = members_count + 1 WHERE id = $1', clan_id)
-                
-                return {
-                    'success': True,
-                    'message': f'✅ Вы вступили в клан {clan["name"]}!'
-                }
-
     # ========== МЕТОДЫ ДЛЯ ТРАНЗАКЦИЙ ==========
 
     async def transfer_money(self, from_id: int, to_id: int, amount: int, fee: int) -> Dict:
@@ -714,104 +614,9 @@ class Database:
                 
                 return {'success': True}
 
-    # ========== МЕТОДЫ ДЛЯ ЕЖЕНЕДЕЛЬНЫХ ТОПОВ ==========
-
-    async def update_weekly_tops(self):
-        """Обновление еженедельных топов"""
-        async with self.pool.acquire() as conn:
-            now = datetime.datetime.now()
-            week_start = (now - datetime.timedelta(days=7)).date()
-            week_end = now.date()
-            
-            await conn.execute('DELETE FROM weekly_top_balance WHERE week_end = $1', week_end)
-            await conn.execute('DELETE FROM weekly_top_referrals WHERE week_end = $1', week_end)
-            await conn.execute('DELETE FROM weekly_top_clans WHERE week_end = $1', week_end)
-            
-            await conn.execute('''
-                INSERT INTO weekly_top_balance (user_id, username, balance, week_start, week_end, rank)
-                SELECT user_id, username, balance, $1, $2,
-                       ROW_NUMBER() OVER (ORDER BY balance DESC) as rank
-                FROM users
-                WHERE is_banned = FALSE
-                ORDER BY balance DESC
-                LIMIT 10
-            ''', week_start, week_end)
-            
-            await conn.execute('''
-                INSERT INTO weekly_top_referrals (user_id, username, referral_count, week_start, week_end, rank)
-                SELECT user_id, username, referral_count, $1, $2,
-                       ROW_NUMBER() OVER (ORDER BY referral_count DESC) as rank
-                FROM users
-                WHERE is_banned = FALSE
-                ORDER BY referral_count DESC
-                LIMIT 10
-            ''', week_start, week_end)
-            
-            await conn.execute('''
-                INSERT INTO weekly_top_clans (clan_id, clan_name, clan_tag, total_balance, week_start, week_end, rank)
-                SELECT c.id, c.name, c.tag, c.balance, $1, $2,
-                       ROW_NUMBER() OVER (ORDER BY c.balance DESC) as rank
-                FROM clans c
-                ORDER BY c.balance DESC
-                LIMIT 10
-            ''', week_start, week_end)
-            
-            logger.info("🏆 Еженедельные топы обновлены")
-
-    async def get_weekly_top_balance(self) -> List[Dict]:
-        async with self.pool.acquire() as conn:
-            rows = await conn.fetch('''
-                SELECT * FROM weekly_top_balance 
-                WHERE week_end = (SELECT MAX(week_end) FROM weekly_top_balance)
-                ORDER BY rank
-            ''')
-            return [dict(row) for row in rows]
-
-    async def get_weekly_top_referrals(self) -> List[Dict]:
-        async with self.pool.acquire() as conn:
-            rows = await conn.fetch('''
-                SELECT * FROM weekly_top_referrals 
-                WHERE week_end = (SELECT MAX(week_end) FROM weekly_top_referrals)
-                ORDER BY rank
-            ''')
-            return [dict(row) for row in rows]
-
-    async def get_weekly_top_clans(self) -> List[Dict]:
-        async with self.pool.acquire() as conn:
-            rows = await conn.fetch('''
-                SELECT * FROM weekly_top_clans 
-                WHERE week_end = (SELECT MAX(week_end) FROM weekly_top_clans)
-                ORDER BY rank
-            ''')
-            return [dict(row) for row in rows]
-
-    async def get_weekly_winners(self) -> Dict:
-        async with self.pool.acquire() as conn:
-            balance_winner = await conn.fetchrow('''
-                SELECT * FROM weekly_top_balance 
-                WHERE rank = 1 AND week_end = (SELECT MAX(week_end) FROM weekly_top_balance)
-            ''')
-            
-            referrals_winner = await conn.fetchrow('''
-                SELECT * FROM weekly_top_referrals 
-                WHERE rank = 1 AND week_end = (SELECT MAX(week_end) FROM weekly_top_referrals)
-            ''')
-            
-            clans_winner = await conn.fetchrow('''
-                SELECT * FROM weekly_top_clans 
-                WHERE rank = 1 AND week_end = (SELECT MAX(week_end) FROM weekly_top_clans)
-            ''')
-            
-            return {
-                'balance': dict(balance_winner) if balance_winner else None,
-                'referrals': dict(referrals_winner) if referrals_winner else None,
-                'clans': dict(clans_winner) if clans_winner else None
-            }
-
     # ========== МЕТОДЫ ДЛЯ ПРОВЕРКИ АДМИНА ==========
 
     async def check_admin(self, user_id: int) -> bool:
-        """Проверка, является ли пользователь администратором"""
         from config import ADMIN_IDS, MAIN_ADMIN_ID
         return user_id in ADMIN_IDS or user_id == MAIN_ADMIN_ID
 
