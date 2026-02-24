@@ -2,6 +2,7 @@ from aiogram import types
 from aiogram.dispatcher import FSMContext
 from database import Database
 from config import *
+from typing import Dict
 
 class PaymentSystem:
     def __init__(self, bot, db: Database):
