@@ -5,6 +5,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from database import Database
 from payments import PaymentSystem
 from config import *
+from typing import Dict, Optional
 
 class AdminStates(StatesGroup):
     waiting_for_user_id = State()
