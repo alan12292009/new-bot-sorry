@@ -39,6 +39,8 @@ from weekly_top import WeeklyTop
 from houses import HouseShop, HouseStates
 from casino import Casino, CasinoStates
 from accessories import AccessoryShop, AccessoryStates
+from club import AFKClub, ClubStates
+from settings import UserSettings, SettingsStates
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -67,6 +69,8 @@ weekly_top = WeeklyTop(bot, db)
 house_shop = HouseShop(bot, db, payments, confirmations)
 casino = Casino(bot, db, payments, confirmations)
 accessory_shop = AccessoryShop(bot, db, payments, confirmations)
+club = AFKClub(bot, db)  # НОВЫЙ МОДУЛЬ
+user_settings = UserSettings(bot, db)  # НОВЫЙ МОДУЛЬ
 
 # Команда /start
 @dp.message_handler(commands=['start'])
@@ -98,16 +102,26 @@ async def show_main_menu(message: types.Message):
     user = await db.get_user(message.from_user.id)
     greeting = db.get_greeting(message.from_user.first_name or "Игрок")
     
+    # Получаем настройки пользователя для отображения ника
+    settings = await user_settings.get_user_settings(message.from_user.id)
+    display_name = await user_settings.get_display_name(
+        message.from_user.id,
+        message.from_user.username,
+        message.from_user.first_name
+    )
+    
     # СОЗДАЕМ КЛАВИАТУРУ СО ВСЕМИ КНОПКАМИ
     keyboard = InlineKeyboardMarkup(row_width=2)
     
     # ОСНОВНЫЕ РАЗДЕЛЫ
     keyboard.add(
         InlineKeyboardButton("🎰 Казино", callback_data="casino_menu"),
+        InlineKeyboardButton("🎮 AFK Клуб", callback_data="club_menu"),
         InlineKeyboardButton("🏛️ Государство", callback_data="gov_menu"),
         InlineKeyboardButton("🏰 Кланы", callback_data="clans_menu"),
         InlineKeyboardButton("💰 Баланс", callback_data="balance"),
-        InlineKeyboardButton("👥 Рефералы", callback_data="referrals")
+        InlineKeyboardButton("👥 Рефералы", callback_data="referrals"),
+        InlineKeyboardButton("⚙️ Настройки", callback_data="settings_menu")
     )
     
     # МАГАЗИНЫ И ПОКУПКИ
@@ -146,7 +160,8 @@ async def show_main_menu(message: types.Message):
     await message.reply(
         f"{greeting}\n\n"
         f"🎲 *{BOT_NAME} v{BOT_VERSION}* 🎲\n"
-        f"💰 Баланс: *{user['balance']:,}{CURR}*\n\n"
+        f"👤 *{display_name}*\n"
+        f"💰 Баланс: *{user['balance'] if not settings['hide_balance'] else '🔒 СКРЫТО'}*{'' if settings['hide_balance'] else CURR}\n\n"
         f"Выберите раздел:",
         parse_mode="Markdown",
         reply_markup=keyboard
@@ -175,6 +190,33 @@ async def process_callback(callback_query: types.CallbackQuery, state: FSMContex
     
     elif data == "referrals":
         await show_referrals(callback_query)
+    
+    # ========== AFK КЛУБ ==========
+    elif data == "club_menu":
+        await club.show_club_menu(callback_query.message)
+    elif data == "club_enter":
+        await club.enter_club(callback_query)
+    elif data == "club_leave":
+        await club.leave_club(callback_query)
+    elif data == "club_claim":
+        await club.claim_earnings(callback_query)
+    elif data == "club_stats":
+        await club.show_stats(callback_query)
+    
+    # ========== НАСТРОЙКИ ==========
+    elif data == "settings_menu":
+        await user_settings.show_settings_menu(callback_query.message)
+    elif data == "settings_set_nick":
+        await user_settings.set_nickname_start(callback_query, state)
+    elif data == "settings_remove_nick":
+        user_id = callback_query.from_user.id
+        settings = await user_settings.get_user_settings(user_id)
+        settings['nickname'] = None
+        await user_settings.save_user_settings(user_id, settings)
+        await user_settings.show_settings_menu(callback_query.message)
+    elif data.startswith("settings_toggle_"):
+        setting = data.replace('settings_toggle_', '')
+        await user_settings.toggle_setting(callback_query, setting)
     
     # ========== КАЗИНО ==========
     elif data == "casino_menu":
@@ -296,11 +338,11 @@ async def process_callback(callback_query: types.CallbackQuery, state: FSMContex
     
     # ========== ТОРГОВЛЯ ==========
     elif data == "transfer_money":
-        await trading.transfer_money_start(callback_query, state)
+        await trading.transfer_money_start(callback_query, state, user_settings)
     elif data == "trade_items":
-        await trading.trade_items_start(callback_query, state)
+        await trading.trade_items_start(callback_query, state, user_settings)
     elif data.startswith("trade_"):
-        await trading.process_trade_item(callback_query, state)
+        await trading.process_trade_item(callback_query, state, user_settings)
     
     # ========== ИНВЕНТАРЬ ==========
     elif data == "inventory":
@@ -356,38 +398,60 @@ async def process_callback(callback_query: types.CallbackQuery, state: FSMContex
 
 # Функция показа баланса
 async def show_balance(callback_query: types.CallbackQuery):
-    user = await db.get_user(callback_query.from_user.id)
+    user_id = callback_query.from_user.id
+    user = await db.get_user(user_id)
+    settings = await user_settings.get_user_settings(user_id)
+    
+    # Проверяем, скрыт ли баланс
+    if settings['hide_balance']:
+        await callback_query.answer(
+            "🔒 Вы скрыли свой баланс в настройках",
+            show_alert=True
+        )
+        return
     
     # Получаем крипто-портфель
-    crypto_wallet = await db.get_user_crypto_wallet(callback_query.from_user.id)
+    crypto_wallet = await db.get_user_crypto_wallet(user_id)
     crypto_value = 0
     for item in crypto_wallet:
         crypto_value += float(item['amount']) * float(item['price'])
     
     # Получаем машины и телефоны
-    cars = await db.get_user_cars(callback_query.from_user.id)
-    phones = await db.get_user_phones(callback_query.from_user.id)
+    cars = await db.get_user_cars(user_id)
+    phones = await db.get_user_phones(user_id)
     
     # Получаем дома
     async with db.pool.acquire() as conn:
-        houses = await conn.fetch('SELECT * FROM houses WHERE user_id = $1', callback_query.from_user.id)
+        houses = await conn.fetch('SELECT * FROM houses WHERE user_id = $1', user_id)
     
     # Получаем аксессуары
-    accessories = await db.get_user_accessories(callback_query.from_user.id)
+    accessories = await db.get_user_accessories(user_id)
+    
+    # Получаем статистику клуба
+    club_stats = club.active_members.get(user_id, {'earned': 0})
+    club_earnings = club_stats['earned']
     
     cars_value = sum(car['price'] for car in cars)
     phones_value = sum(phone['price'] for phone in phones)
     houses_value = sum(house['price'] for house in houses)
     accessories_value = sum(acc['price'] for acc in accessories)
     
+    display_name = await user_settings.get_display_name(
+        user_id,
+        user['username'],
+        user['first_name']
+    )
+    
     text = f"💰 *ТВОЙ БАЛАНС* 💰\n\n"
+    text += f"👤 *{display_name}*\n\n"
     text += f"💵 Наличные: *{user['balance']:,}{CURR}*\n"
     text += f"💎 Криптовалюта: *{crypto_value:,.2f}{CURR}*\n"
     text += f"🚗 Машины: *{cars_value:,}{CURR}*\n"
     text += f"📱 Телефоны: *{phones_value:,}{CURR}*\n"
     text += f"🏠 Дома: *{houses_value:,}{CURR}*\n"
     text += f"👕 Аксессуары: *{accessories_value:,}{CURR}*\n"
-    text += f"💎 Общий капитал: *{user['balance'] + crypto_value + cars_value + phones_value + houses_value + accessories_value:,.2f}{CURR}*"
+    text += f"🎮 Заработано в клубе: *{club_earnings:,}{CURR}*\n"
+    text += f"💎 Общий капитал: *{user['balance'] + crypto_value + cars_value + phones_value + houses_value + accessories_value + club_earnings:,.2f}{CURR}*"
     
     keyboard = InlineKeyboardMarkup()
     keyboard.add(InlineKeyboardButton("🏠 Главное меню", callback_data="menu"))
@@ -398,11 +462,19 @@ async def show_balance(callback_query: types.CallbackQuery):
 async def show_referrals(callback_query: types.CallbackQuery):
     user_id = callback_query.from_user.id
     user = await db.get_user(user_id)
+    settings = await user_settings.get_user_settings(user_id)
     
     bot_username = (await bot.me).username
     referral_link = f"https://t.me/{bot_username}?start={user_id}"
     
+    display_name = await user_settings.get_display_name(
+        user_id,
+        user['username'],
+        user['first_name']
+    )
+    
     text = f"👥 *РЕФЕРАЛЬНАЯ СИСТЕМА* 👥\n\n"
+    text += f"👤 *{display_name}*\n\n"
     text += f"🔗 Твоя ссылка:\n`{referral_link}`\n\n"
     text += f"💰 Заработано: *{user['referral_earnings']:,}{CURR}*\n"
     text += f"👥 Приглашено: *{user['referral_count']}*\n\n"
@@ -419,6 +491,8 @@ async def show_referrals(callback_query: types.CallbackQuery):
 # Функция показа инвентаря
 async def show_inventory(callback_query: types.CallbackQuery):
     user_id = callback_query.from_user.id
+    user = await db.get_user(user_id)
+    settings = await user_settings.get_user_settings(user_id)
     
     cars = await db.get_user_cars(user_id)
     phones = await db.get_user_phones(user_id)
@@ -428,7 +502,14 @@ async def show_inventory(callback_query: types.CallbackQuery):
     async with db.pool.acquire() as conn:
         houses = await conn.fetch('SELECT * FROM houses WHERE user_id = $1', user_id)
     
-    text = "📦 *ТВОЙ ИНВЕНТАРЬ* 📦\n\n"
+    display_name = await user_settings.get_display_name(
+        user_id,
+        user['username'],
+        user['first_name']
+    )
+    
+    text = f"📦 *ТВОЙ ИНВЕНТАРЬ* 📦\n\n"
+    text += f"👤 *{display_name}*\n\n"
     
     if cars:
         text += "*🚗 Машины:*\n"
@@ -471,26 +552,44 @@ async def show_inventory(callback_query: types.CallbackQuery):
 
 # Функция показа статистики
 async def show_stats(callback_query: types.CallbackQuery):
-    user = await db.get_user(callback_query.from_user.id)
+    user_id = callback_query.from_user.id
+    user = await db.get_user(user_id)
+    settings = await user_settings.get_user_settings(user_id)
     
     # Получаем количество предметов
-    cars = await db.get_user_cars(callback_query.from_user.id)
-    phones = await db.get_user_phones(callback_query.from_user.id)
-    accessories = await db.get_user_accessories(callback_query.from_user.id)
+    cars = await db.get_user_cars(user_id)
+    phones = await db.get_user_phones(user_id)
+    accessories = await db.get_user_accessories(user_id)
     
     async with db.pool.acquire() as conn:
-        houses = await conn.fetch('SELECT COUNT(*) as count FROM houses WHERE user_id = $1', callback_query.from_user.id)
+        houses = await conn.fetch('SELECT COUNT(*) as count FROM houses WHERE user_id = $1', user_id)
         house_count = houses[0]['count'] if houses else 0
     
+    # Статистика клуба
+    club_stats = club.active_members.get(user_id, {'earned': 0, 'joined_at': None})
+    club_time = 0
+    if club_stats['joined_at']:
+        club_time = (datetime.datetime.now() - club_stats['joined_at']).total_seconds() / 3600
+    
+    display_name = await user_settings.get_display_name(
+        user_id,
+        user['username'],
+        user['first_name']
+    )
+    
     text = f"📊 *ТВОЯ СТАТИСТИКА* 📊\n\n"
+    text += f"👤 *{display_name}*\n\n"
     text += f"📅 В боте с: *{user['created_at'].strftime('%d.%m.%Y')}*\n"
-    text += f"💰 Баланс: *{user['balance']:,}{CURR}*\n"
+    text += f"💰 Баланс: *{user['balance'] if not settings['hide_balance'] else '🔒 СКРЫТО'}*{'' if settings['hide_balance'] else CURR}\n"
     text += f"👥 Рефералов: *{user['referral_count']}*\n"
     text += f"💎 Заработано с рефералов: *{user['referral_earnings']:,}{CURR}*\n"
     text += f"🚗 Машин: *{len(cars)}*\n"
     text += f"📱 Телефонов: *{len(phones)}*\n"
     text += f"🏠 Домов: *{house_count}*\n"
-    text += f"👕 Аксессуаров: *{len(accessories)}*"
+    text += f"👕 Аксессуаров: *{len(accessories)}*\n"
+    text += f"🎮 В клубе: *{'Да' if user_id in club.active_members else 'Нет'}*\n"
+    text += f"⏱ Время в клубе: *{int(club_time)}* ч\n"
+    text += f"💰 Заработано в клубе: *{club_stats['earned']}{CURR}*"
     
     keyboard = InlineKeyboardMarkup()
     keyboard.add(InlineKeyboardButton("🏠 Главное меню", callback_data="menu"))
@@ -501,7 +600,7 @@ async def show_stats(callback_query: types.CallbackQuery):
 async def show_top(callback_query: types.CallbackQuery):
     async with db.pool.acquire() as conn:
         top = await conn.fetch('''
-            SELECT username, first_name, balance 
+            SELECT user_id, username, first_name, balance 
             FROM users 
             WHERE is_banned = FALSE 
             ORDER BY balance DESC 
@@ -511,9 +610,22 @@ async def show_top(callback_query: types.CallbackQuery):
     text = "🏆 *ТОП ИГРОКОВ* 🏆\n\n"
     
     for i, player in enumerate(top, 1):
-        name = player['username'] or player['first_name'] or f"Игрок {i}"
+        # Проверяем настройки приватности
+        settings = await user_settings.get_user_settings(player['user_id'])
+        
+        if settings['private_mode']:
+            display_name = "🔒 Приватный пользователь"
+        elif settings['show_nickname'] and settings['nickname']:
+            display_name = settings['nickname']
+        elif player['username']:
+            display_name = f"@{player['username']}"
+        else:
+            display_name = player['first_name'] or f"ID{player['user_id']}"
+        
+        balance_display = "🔒 СКРЫТО" if settings['hide_balance'] else f"{player['balance']:,}{CURR}"
+        
         medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
-        text += f"{medal} @{name} - {player['balance']:,}{CURR}\n"
+        text += f"{medal} {display_name} - {balance_display}\n"
     
     keyboard = InlineKeyboardMarkup()
     keyboard.add(InlineKeyboardButton("🏠 Главное меню", callback_data="menu"))
@@ -525,6 +637,8 @@ async def show_help(callback_query: types.CallbackQuery):
     text = f"🆘 *ПОМОЩЬ* 🆘\n\n"
     text += f"👑 Админ: @{MAIN_ADMIN_USERNAME}\n\n"
     text += f"🎰 *Казино* - игры, дуэли, джекпот\n"
+    text += f"🎮 *AFK Клуб* - пассивный доход (200$/час)\n"
+    text += f"⚙️ *Настройки* - ник, приватность, блокировки\n"
     text += f"🏛️ *Государство* - продажа предметов (20% комиссия)\n"
     text += f"🏰 *Кланы* - создание и вступление в кланы\n"
     text += f"🚗 *Машины* - покупка автомобилей\n"
@@ -672,6 +786,14 @@ async def casino_duel_bet(message: types.Message, state: FSMContext):
 @dp.message_handler(state=AccessoryStates.waiting_for_accessory_confirm)
 async def accessory_confirm(message: types.Message, state: FSMContext):
     await accessory_shop.process_confirm(message, state)
+
+@dp.message_handler(state=SettingsStates.waiting_for_nickname)
+async def settings_nickname(message: types.Message, state: FSMContext):
+    await user_settings.process_nickname(message, state)
+
+@dp.message_handler(state=ClubStates.waiting_for_nickname)
+async def club_nickname(message: types.Message, state: FSMContext):
+    await club.process_nickname(message, state)
 
 # ========== ОБРАБОТЧИКИ ПОДТВЕРЖДЕНИЙ ==========
 
